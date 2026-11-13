@@ -66,92 +66,25 @@ int process_rpu_info(DoviRpuOpaque *rpu, const DoviRpuDataHeader *header) {
 }
 
 int process_rpu_data_mapping(DoviRpuOpaque *rpu, const DoviRpuDataHeader *header) {
-    const DoviRpuDataMapping *rpu_data_mapping = dovi_rpu_get_data_mapping(rpu);
-    if (!rpu_data_mapping)
+    const DoviRpuDataMappingV2 *mapping = dovi_rpu_get_data_mapping_v2(rpu);
+    if (!mapping)
         return -1;
 
-    printf("vdr_rpu_data_mapping()\n");
-
-    // Use the rpu_data_mapping metadata..
     for (int cmp = 0; cmp < DoviNUM_COMPONENTS; cmp++) {
-        printf("  cmp %d\n", cmp);
-
-        const DoviReshapingCurve curve = rpu_data_mapping->curves[cmp];
-
-        // 1D buffer example
-        printf("    num_pivots: %d\n", curve.num_pivots_minus2 + 2);
-        printf("      values: [", cmp);
-
-        const uint16_t *buf = curve.pivots.data;
-        for (int  i= 0; i < curve.pivots.len; i++) {
-            printf(" %d", buf[i]);
-        }
-        printf(" ]\n");
-
-        if (curve.polynomial) {
-            printf("     Polynomial reshaping curve\n");
-            const DoviPolynomialCurve *poly_curve = curve.polynomial;
-
-            // 2D buffer example
-            const DoviU64Data2D poly_coef = poly_curve->poly_coef;
-            printf("      poly_coefs\n");
-
-            for (int i = 0; i < poly_coef.len; i++) {
-                const DoviU64Data *dovi_data = poly_coef.list[i];
-                printf("       poly_coef[%d], len: %d, values: [", i, dovi_data->len);
-
-                const uint64_t *buf = dovi_data->data;
-                for (int j = 0; j < dovi_data->len; j++) {
-                    printf(" %d", buf[j]);
-                }
-
-                printf(" ]\n");
-            }
-        } else if (curve.mmr) {
-            printf("     MMR reshaping curve\n");
-            const DoviMMRCurve *mmr_curve = curve.mmr;
-
-            // 3D buffer example
-            const DoviU64Data3D mmr_coef = mmr_curve->mmr_coef;
-            printf("      mmr_coefs, len: %d\n", mmr_coef.len);
-
-            for (int i = 0; i < mmr_coef.len; i++) {
-                const DoviU64Data2D *dovi_data_2d = mmr_coef.list[i];
-                printf("       mmr_coef[%d], len: %d, values: [\n", i, dovi_data_2d->len);
-
-                for (int j = 0; j < dovi_data_2d->len; j++) {
-                    const DoviU64Data *dovi_data = dovi_data_2d->list[j];
-                    printf("        mmr_coef[%d][%d], len: %d, values: [", i, j, dovi_data->len);
-                    
-                    const uint64_t *buf = dovi_data->data;
-                    for (int k = 0; k < dovi_data->len; k++) {
-                        printf(" %d", buf[k]);
-                    }
-
-                    printf(" ]\n");
-                }
-
-                printf("       ]\n");
+        const DoviReshapingCurveV2 *curve = &mapping->curves[cmp];
+        for (size_t i = 0; i < curve->piece_count; i++) {
+            const DoviMappingPieceV2 *piece = &curve->pieces[i];
+            printf("component %d piece %zu method %u\n", cmp, i, piece->method);
+            if (piece->method == 0) {
+                for (size_t j = 0; j < piece->polynomial_count; j++)
+                    printf("  polynomial[%zu] encoded %llu\n", j, (unsigned long long)piece->polynomial[j].value);
+            } else {
+                printf("  MMR orders %u constant %llu\n", piece->mmr_order_count,
+                    (unsigned long long)piece->mmr_constant.value);
             }
         }
     }
-
-    // We have NLQ metadata (and therefore an enhancement layer)
-    if (rpu_data_mapping->nlq) {
-        const DoviRpuDataNlq *rpu_data_nlq = rpu_data_mapping->nlq;
-        printf("Non linear quantization (NLQ)\n");
-
-        // Do something with the NLQ data..
-        printf("    nlq_offset: [%d, %d, %d]\n",
-            rpu_data_nlq->nlq_offset[0], rpu_data_nlq->nlq_offset[1], rpu_data_nlq->nlq_offset[2]);
-        printf("    vdr_in_max_int: [%d, %d, %d]\n",
-            rpu_data_nlq->vdr_in_max_int[0], rpu_data_nlq->vdr_in_max_int[1], rpu_data_nlq->vdr_in_max_int[2]);
-        printf("    vdr_in_max: [%d, %d, %d]\n",
-            rpu_data_nlq->vdr_in_max[0], rpu_data_nlq->vdr_in_max[1], rpu_data_nlq->vdr_in_max[2]);
-    }
-
-    dovi_rpu_free_data_mapping(rpu_data_mapping);
-
+    dovi_rpu_free_data_mapping_v2(mapping);
     return 0;
 }
 

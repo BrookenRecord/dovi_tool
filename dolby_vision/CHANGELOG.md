@@ -1,3 +1,26 @@
+## Unreleased: breaking mapping API
+
+- Each `DoviReshapingCurve` owns ordered `pieces: Vec<DoviMappingPiece>`.
+  Polynomial and MMR variants own their coefficients; mixed methods retain wire order.
+  Component-wide `mapping_idc`, `polynomial`, `mmr`, `DoviMappingMethod`,
+  `DoviPolynomialCurve`, and `DoviMMRCurve` are removed.
+- `DoviCoefficient` preserves an optional signed integer and encoded value.
+  Polynomial coefficient count determines degree; MMR order count determines order.
+  `DoviPolynomialPiece::p81_default` replaces the old polynomial-curve constructor.
+- JSON uses tagged `{ "method": "Polynomial" | "MMR", "data": ... }` pieces.
+  This changes serialized output; no legacy shape inference is provided.
+- `validate_with_header` checks complete mapping/header/NLQ consistency. `write`
+  refuses invalid caller objects before emitting mapping bits; I/O rollback is not promised.
+  Polynomial interpolation returns an explicit unsupported error instead of panicking.
+- Pivots remain coded deltas. Consumers needing absolute coordinates must perform
+  checked cumulative sums; the parser does not normalize them.
+- C mapping API version 2 uses `dovi_rpu_get_data_mapping_v2` and
+  `dovi_rpu_free_data_mapping_v2` with `DoviRpuDataMappingV2`. Old mapping getter,
+  free function, homogeneous curve layouts, and mapping-only nested buffers are removed.
+  Each curve has inline pivots and one owned piece buffer with bounded inline payloads.
+  Rebuild C clients against a newly generated header. Read-only exported mappings
+  outlive their source RPU and must be freed exactly once with the versioned free function.
+
 ## 3.4.0
 
 - `ReservedExtMetadataBlock.data` was replaced by a regular `Vec`.

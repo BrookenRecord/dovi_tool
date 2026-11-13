@@ -1,8 +1,6 @@
 use crate::rpu::{
     NUM_COMPONENTS,
-    rpu_data_mapping::{
-        DoviMappingMethod, DoviPolynomialCurve, DoviReshapingCurve, RpuDataMapping,
-    },
+    rpu_data_mapping::{DoviMappingPiece, DoviPolynomialPiece, DoviReshapingCurve, RpuDataMapping},
 };
 
 use super::{DoviProfile, VdrDmData};
@@ -64,9 +62,9 @@ impl Profile81 {
         DoviReshapingCurve {
             num_pivots_minus2: 0,
             pivots: vec![0, 1023],
-            mapping_idc: DoviMappingMethod::Polynomial,
-            polynomial: Some(DoviPolynomialCurve::p81_default()),
-            mmr: None,
+            pieces: vec![DoviMappingPiece::Polynomial(
+                DoviPolynomialPiece::p81_default(),
+            )],
         }
     }
 }

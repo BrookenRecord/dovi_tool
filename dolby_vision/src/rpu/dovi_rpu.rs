@@ -323,7 +323,7 @@ impl DoviRpu {
         self.header.validate(self.dovi_profile)?;
 
         if let Some(mapping) = self.rpu_data_mapping.as_ref() {
-            mapping.validate(self.dovi_profile)?;
+            mapping.validate_with_header(&self.header)?;
         }
 
         if let Some(vdr_dm_data) = &self.vdr_dm_data {

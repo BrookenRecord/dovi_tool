@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use bitvec_helpers::{
     bitstream_io_reader::BsIoSliceReader, bitstream_io_writer::BitstreamIoWriter,
 };
@@ -112,15 +112,24 @@ impl DmData {
         reader: &mut BsIoSliceReader,
     ) -> Result<Option<T>> {
         let num_ext_blocks = reader.read_ue()?;
-        let mut meta = T::with_blocks_allocation(num_ext_blocks);
-
-        meta.set_num_ext_blocks(num_ext_blocks);
-
         while !reader.byte_aligned() {
             ensure!(!reader.read_bit()?, "dm_alignment_zero_bit != 0");
         }
 
-        for _ in 0..num_ext_blocks {
+        // Every block needs at least one UE length bit and eight level bits.
+        // Later payloads or trailing data can only make this bound more permissive.
+        ensure!(
+            num_ext_blocks <= reader.available()? / 9,
+            "Extension metadata block count exceeds remaining input"
+        );
+        let block_count = usize::try_from(num_ext_blocks)
+            .map_err(|_| anyhow!("Extension metadata block count does not fit usize"))?;
+
+        let mut meta = T::default();
+        reserve_blocks(meta.blocks_mut(), block_count)?;
+        meta.set_num_ext_blocks(num_ext_blocks);
+
+        for _ in 0..block_count {
             meta.parse_block(reader)?;
         }
 
@@ -141,3 +150,12 @@ impl DmData {
         }
     }
 }
+
+fn reserve_blocks(blocks: &mut Vec<ExtMetadataBlock>, count: usize) -> Result<()> {
+    blocks
+        .try_reserve_exact(count)
+        .map_err(|_| anyhow!("Failed to reserve extension metadata blocks"))
+}
+
+#[cfg(test)]
+mod tests;

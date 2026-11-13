@@ -1,5 +1,3 @@
-use crate::rpu::NUM_COMPONENTS;
-
 mod buffers;
 mod extension_metadata;
 mod rpu;
@@ -12,6 +10,6 @@ pub use buffers::*;
 pub use extension_metadata::DmData;
 pub use rpu::{RpuOpaque, RpuOpaqueList};
 pub use rpu_data_header::RpuDataHeader;
-pub use rpu_data_mapping::RpuDataMapping;
+pub use rpu_data_mapping::RpuDataMappingV2;
 pub use rpu_data_nlq::RpuDataNlq;
 pub use vdr_dm_data::VdrDmData;

@@ -249,39 +249,41 @@ pub unsafe extern "C" fn dovi_rpu_free_header(ptr: *const RpuDataHeader) {
     }
 }
 
-/// # Safety
-/// The pointer to the opaque struct must be valid.
+/// Return an owned version 2 mapping, preserving each piece's method and coefficients.
+/// Returns null for null/invalid RPU, absent mapping, validation or reservation failure.
+/// Release once with dovi_rpu_free_data_mapping_v2; the result outlives the input RPU.
 ///
-/// Get the DoVi RpuDataMapping struct.
+/// # Safety
+/// A non-null input must point to a live RpuOpaque. Do not mutate returned fields or pointers.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn dovi_rpu_get_data_mapping(ptr: *const RpuOpaque) -> *const RpuDataMapping {
+pub unsafe extern "C" fn dovi_rpu_get_data_mapping_v2(
+    ptr: *const RpuOpaque,
+) -> *const RpuDataMappingV2 {
     if ptr.is_null() {
-        return null_mut();
+        return null();
     }
-
     let opaque = unsafe { &*ptr };
-
-    if let Some(rpu) = &opaque.rpu {
-        if let Some(rpu_data_mapping) = &rpu.rpu_data_mapping {
-            Box::into_raw(Box::new(RpuDataMapping::from(rpu_data_mapping)))
-        } else {
-            null_mut()
-        }
-    } else {
-        null_mut()
-    }
+    opaque
+        .rpu
+        .as_ref()
+        .and_then(|rpu| {
+            rpu.rpu_data_mapping
+                .as_ref()
+                .and_then(|mapping| RpuDataMappingV2::try_new(mapping, &rpu.header).ok())
+        })
+        .map_or(null(), |mapping| Box::into_raw(Box::new(mapping)))
 }
 
-/// # Safety
-/// The pointer to the struct must be valid.
+/// Free an owned v2 mapping and all of its piece buffers. Null is accepted.
 ///
-/// Frees the memory used by the RpuDataMapping.
+/// # Safety
+/// A non-null pointer must be an unmodified live result from dovi_rpu_get_data_mapping_v2,
+/// and must be freed exactly once. All pointers borrowed from it become invalid.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn dovi_rpu_free_data_mapping(ptr: *const RpuDataMapping) {
+pub unsafe extern "C" fn dovi_rpu_free_data_mapping_v2(ptr: *const RpuDataMappingV2) {
     if !ptr.is_null() {
         unsafe {
-            let rpu_data_mapping = Box::from_raw(ptr as *mut RpuDataMapping);
-            rpu_data_mapping.free();
+            drop(Box::from_raw(ptr as *mut RpuDataMappingV2));
         }
     }
 }
