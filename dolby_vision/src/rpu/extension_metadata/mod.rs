@@ -1,4 +1,5 @@
-use anyhow::{Context, Result, anyhow, ensure};
+use crate::rpu::bounded_error::{BoundedParseError, BoundedResult, bensure, bounded_error};
+use anyhow::{Context, Result, ensure};
 use bitvec_helpers::{
     bitstream_io_reader::BsIoSliceReader, bitstream_io_writer::BitstreamIoWriter,
 };
@@ -107,30 +108,38 @@ pub trait WithExtMetadataBlocks {
     }
 }
 
+pub(crate) trait BoundedExtMetadataBlocks: WithExtMetadataBlocks {
+    fn parse_block_bounded(&mut self, reader: &mut BsIoSliceReader) -> BoundedResult<()>;
+}
+
 impl DmData {
-    pub(crate) fn parse<T: WithExtMetadataBlocks + Default>(
+    pub(crate) fn parse<T: BoundedExtMetadataBlocks + Default>(
         reader: &mut BsIoSliceReader,
-    ) -> Result<Option<T>> {
+    ) -> BoundedResult<Option<T>> {
         let num_ext_blocks = reader.read_ue()?;
         while !reader.byte_aligned() {
-            ensure!(!reader.read_bit()?, "dm_alignment_zero_bit != 0");
+            bensure!(!reader.read_bit()?, "dm_alignment_zero_bit != 0");
         }
 
         // Every block needs at least one UE length bit and eight level bits.
         // Later payloads or trailing data can only make this bound more permissive.
-        ensure!(
+        bensure!(
             num_ext_blocks <= reader.available()? / 9,
             "Extension metadata block count exceeds remaining input"
         );
-        let block_count = usize::try_from(num_ext_blocks)
-            .map_err(|_| anyhow!("Extension metadata block count does not fit usize"))?;
+        let block_count = usize::try_from(num_ext_blocks).map_err(|_| {
+            bounded_error!(
+                Capacity,
+                "Extension metadata block count does not fit usize"
+            )
+        })?;
 
         let mut meta = T::default();
         reserve_blocks(meta.blocks_mut(), block_count)?;
         meta.set_num_ext_blocks(num_ext_blocks);
 
         for _ in 0..block_count {
-            meta.parse_block(reader)?;
+            meta.parse_block_bounded(reader)?;
         }
 
         Ok(Some(meta))
@@ -143,18 +152,25 @@ impl DmData {
         }
     }
 
+    /// Validate field constraints. Errors use a legacy Anyhow adapter; exact text
+    /// and chain identity are unspecified, while reader I/O kinds remain downcastable.
     pub fn validate(&self) -> Result<()> {
+        self.validate_bounded()
+            .map_err(BoundedParseError::into_anyhow)
+    }
+
+    pub(crate) fn validate_bounded(&self) -> BoundedResult<()> {
         match self {
-            DmData::V29(m) => m.validate(),
-            DmData::V40(m) => m.validate(),
+            DmData::V29(m) => m.validate_bounded(),
+            DmData::V40(m) => m.validate_bounded(),
         }
     }
 }
 
-fn reserve_blocks(blocks: &mut Vec<ExtMetadataBlock>, count: usize) -> Result<()> {
+fn reserve_blocks(blocks: &mut Vec<ExtMetadataBlock>, count: usize) -> BoundedResult<()> {
     blocks
         .try_reserve_exact(count)
-        .map_err(|_| anyhow!("Failed to reserve extension metadata blocks"))
+        .map_err(|_| bounded_error!(Capacity, "Failed to reserve extension metadata blocks"))
 }
 
 #[cfg(test)]

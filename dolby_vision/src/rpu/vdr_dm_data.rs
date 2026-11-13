@@ -1,4 +1,5 @@
-use anyhow::{Context, Result, bail, ensure};
+use crate::rpu::bounded_error::{BoundedParseError, BoundedResult, bensure};
+use anyhow::{Context, Result, bail};
 use bitvec_helpers::{
     bitstream_io_reader::BsIoSliceReader, bitstream_io_writer::BitstreamIoWriter,
 };
@@ -78,7 +79,7 @@ pub enum CmVersion {
 pub(crate) fn vdr_dm_data_payload(
     reader: &mut BsIoSliceReader,
     header: &RpuDataHeader,
-) -> Result<VdrDmData> {
+) -> BoundedResult<VdrDmData> {
     let compressed_dm_data = header.reserved_zero_3bits == 1;
 
     let mut vdr_dm_data = if compressed_dm_data {
@@ -94,15 +95,15 @@ pub(crate) fn vdr_dm_data_payload(
         VdrDmData::parse(reader)?
     };
 
-    if let Some(cmv29_dm_data) =
-        DmData::parse::<CmV29DmData>(reader).with_context(|| CmV29DmData::VERSION)?
+    if let Some(cmv29_dm_data) = DmData::parse::<CmV29DmData>(reader)
+        .map_err(|e| e.context(crate::rpu::bounded_error::ParseContext::CmV29))?
     {
         vdr_dm_data.cmv29_metadata = Some(DmData::V29(cmv29_dm_data));
     }
 
     if reader.available()? >= DM_DATA_PAYLOAD2_MIN_BITS
-        && let Some(cmv40_dm_data) =
-            DmData::parse::<CmV40DmData>(reader).with_context(|| CmV40DmData::VERSION)?
+        && let Some(cmv40_dm_data) = DmData::parse::<CmV40DmData>(reader)
+            .map_err(|e| e.context(crate::rpu::bounded_error::ParseContext::CmV40))?
     {
         vdr_dm_data.cmv40_metadata = Some(DmData::V40(cmv40_dm_data));
     }
@@ -111,7 +112,7 @@ pub(crate) fn vdr_dm_data_payload(
 }
 
 impl VdrDmData {
-    pub(crate) fn parse(reader: &mut BsIoSliceReader) -> Result<VdrDmData> {
+    pub(crate) fn parse(reader: &mut BsIoSliceReader) -> BoundedResult<VdrDmData> {
         let data = VdrDmData {
             affected_dm_metadata_id: reader.read_ue()?,
             current_dm_metadata_id: reader.read_ue()?,
@@ -157,15 +158,22 @@ impl VdrDmData {
         Ok(data)
     }
 
+    /// Validate field constraints. Errors use a legacy Anyhow adapter; exact text
+    /// and chain identity are unspecified, while reader I/O kinds remain downcastable.
     pub fn validate(&self) -> Result<()> {
-        ensure!(
+        self.validate_bounded()
+            .map_err(BoundedParseError::into_anyhow)
+    }
+
+    pub(crate) fn validate_bounded(&self) -> BoundedResult<()> {
+        bensure!(
             self.affected_dm_metadata_id <= 15,
             "affected_dm_metadata_id should be <= 15"
         );
 
         // FIXME: Compressed DM metadata, should be set from a state somehow
         if !self.compressed {
-            ensure!(
+            bensure!(
                 self.signal_bit_depth >= 8 && self.signal_bit_depth <= 16,
                 "signal_bit_depth should be between 8 and 16"
             );
@@ -174,16 +182,20 @@ impl VdrDmData {
                 && self.signal_eotf_param1 == 0
                 && self.signal_eotf_param2 == 0
             {
-                ensure!(self.signal_eotf == 65535, "signal_eotf should be 65535");
+                bensure!(self.signal_eotf == 65535, "signal_eotf should be 65535");
             }
         }
 
         if let Some(cmv29) = &self.cmv29_metadata {
-            cmv29.validate().with_context(|| CmV29DmData::VERSION)?;
+            cmv29
+                .validate_bounded()
+                .map_err(|e| e.context(crate::rpu::bounded_error::ParseContext::CmV29))?;
         }
 
         if let Some(cmv40) = &self.cmv40_metadata {
-            cmv40.validate().with_context(|| CmV40DmData::VERSION)?;
+            cmv40
+                .validate_bounded()
+                .map_err(|e| e.context(crate::rpu::bounded_error::ParseContext::CmV40))?;
         }
 
         Ok(())

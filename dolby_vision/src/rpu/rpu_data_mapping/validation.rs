@@ -1,14 +1,15 @@
-use anyhow::{Result, ensure};
+use crate::rpu::bounded_error::{BoundedParseError, BoundedResult, bensure};
+use anyhow::Result;
 
 use super::RpuDataMapping;
 use crate::rpu::rpu_data_header::RpuDataHeader;
 
-pub(super) fn validate_widths(header: &RpuDataHeader) -> Result<()> {
-    ensure!(
+pub(super) fn validate_widths(header: &RpuDataHeader) -> BoundedResult<()> {
+    bensure!(
         header.bl_bit_depth_minus8 <= 8 && header.el_bit_depth_minus8 <= 8,
         "Invalid mapping bit depth"
     );
-    ensure!(
+    bensure!(
         match header.coefficient_data_type {
             0 =>
                 header.coefficient_log2_denom <= 23
@@ -25,25 +26,30 @@ impl RpuDataMapping {
     /// Check profile restrictions and mapping shapes without coefficient/header widths.
     /// Use validate_with_header for complete write/export validation.
     pub fn validate(&self, profile: u8) -> Result<()> {
-        ensure!(self.vdr_rpu_id <= 15, "Invalid mapping identifier");
-        ensure!(
+        self.validate_bounded(profile)
+            .map_err(BoundedParseError::into_anyhow)
+    }
+
+    pub(crate) fn validate_bounded(&self, profile: u8) -> BoundedResult<()> {
+        bensure!(self.vdr_rpu_id <= 15, "Invalid mapping identifier");
+        bensure!(
             self.mapping_color_space == 0,
             "mapping_color_space should be 0"
         );
-        ensure!(
+        bensure!(
             self.mapping_chroma_format_idc == 0,
             "mapping_chroma_format_idc should be 0"
         );
         for curve in &self.curves {
-            ensure!(
+            bensure!(
                 curve.num_pivots_minus2 <= 7,
                 "num_pivots_minus2 must be at most 7"
             );
-            ensure!(
+            bensure!(
                 curve.pivots.len() == curve.num_pivots_minus2 as usize + 2,
                 "Invalid pivot count"
             );
-            ensure!(
+            bensure!(
                 curve.pieces.len() == curve.pivots.len() - 1,
                 "Invalid mapping piece count"
             );
@@ -52,7 +58,7 @@ impl RpuDataMapping {
             }
         }
         if matches!(profile, 5 | 8) {
-            ensure!(
+            bensure!(
                 self.nlq_method_idc.is_none()
                     && self.nlq_num_pivots_minus2.is_none()
                     && self.nlq_pred_pivot_value.is_none()
@@ -61,7 +67,7 @@ impl RpuDataMapping {
             );
         }
         if profile == 7 {
-            ensure!(
+            bensure!(
                 self.nlq_pred_pivot_value.is_some_and(|p| p
                     .iter()
                     .map(|v| u32::from(*v))
@@ -77,9 +83,14 @@ impl RpuDataMapping {
     /// Integer coefficients must be writable SE values (i64::MIN is excluded).
     /// Pivot values remain coded deltas; no prefix sum or normalization is performed.
     pub fn validate_with_header(&self, header: &RpuDataHeader) -> Result<()> {
+        self.validate_with_header_bounded(header)
+            .map_err(BoundedParseError::into_anyhow)
+    }
+
+    pub(crate) fn validate_with_header_bounded(&self, header: &RpuDataHeader) -> BoundedResult<()> {
         validate_widths(header)?;
-        header.validate(header.get_dovi_profile())?;
-        ensure!(
+        header.validate_bounded(header.get_dovi_profile())?;
+        bensure!(
             header.rpu_type == 2
                 && header.rpu_format <= 0x7ff
                 && header.rpu_format & 0x700 == 0
@@ -90,14 +101,14 @@ impl RpuDataMapping {
                 && header.ext_mapping_idc_5_7 <= 7,
             "Invalid mapping header fields"
         );
-        ensure!(
+        bensure!(
             header.vdr_seq_info_present_flag && !header.use_prev_vdr_rpu_flag,
             "Mapping requires a self-contained header"
         );
-        self.validate(header.get_dovi_profile())?;
+        self.validate_bounded(header.get_dovi_profile())?;
         let pivot_limit = 1_u32 << (header.bl_bit_depth_minus8 as u32 + 8);
         for curve in &self.curves {
-            ensure!(
+            bensure!(
                 curve.pivots.iter().all(|p| u32::from(*p) < pivot_limit),
                 "Pivot exceeds bit depth"
             );
@@ -108,7 +119,7 @@ impl RpuDataMapping {
 
         let needs_nlq = header.rpu_format & 0x700 == 0 && !header.disable_residual_flag;
         if needs_nlq {
-            ensure!(
+            bensure!(
                 self.nlq_method_idc.is_some()
                     && self.nlq_num_pivots_minus2 == Some(0)
                     && self.nlq_pred_pivot_value.is_some()
@@ -116,14 +127,14 @@ impl RpuDataMapping {
                 "Incomplete NLQ mapping"
             );
             if let Some(pivots) = self.nlq_pred_pivot_value {
-                ensure!(
+                bensure!(
                     pivots.iter().all(|p| u32::from(*p) < pivot_limit),
                     "NLQ pivot exceeds bit depth"
                 );
             }
             if let Some(nlq) = &self.nlq {
                 let offset_limit = 1_u32 << (header.el_bit_depth_minus8 as u32 + 8);
-                ensure!(
+                bensure!(
                     nlq.nlq_offset.iter().all(|v| u32::from(*v) < offset_limit),
                     "NLQ offset exceeds bit depth"
                 );
@@ -133,7 +144,7 @@ impl RpuDataMapping {
                     &nlq.linear_deadzone_slope,
                     &nlq.linear_deadzone_threshold,
                 ] {
-                    ensure!(
+                    bensure!(
                         values.iter().all(|v| *v < limit),
                         "NLQ value exceeds coefficient width"
                     );
@@ -144,7 +155,7 @@ impl RpuDataMapping {
                         &nlq.linear_deadzone_slope_int,
                         &nlq.linear_deadzone_threshold_int,
                     ] {
-                        ensure!(
+                        bensure!(
                             values.iter().all(|v| *v == 0),
                             "Unexpected NLQ integer for type 1"
                         );
@@ -152,7 +163,7 @@ impl RpuDataMapping {
                 }
             }
         } else {
-            ensure!(
+            bensure!(
                 self.nlq_method_idc.is_none()
                     && self.nlq_num_pivots_minus2.is_none()
                     && self.nlq_pred_pivot_value.is_none()

@@ -1,4 +1,5 @@
-use anyhow::{Result, bail, ensure};
+use crate::rpu::bounded_error::{BoundedResult, bbail, bensure};
+use anyhow::Result;
 use bitvec_helpers::{
     bitstream_io_reader::BsIoSliceReader, bitstream_io_writer::BitstreamIoWriter,
 };
@@ -8,7 +9,7 @@ use super::{DoviCoefficient, DoviMappingPiece, DoviMmrPiece, DoviPolynomialPiece
 use crate::rpu::{MMR_MAX_COEFFS, rpu_data_header::RpuDataHeader};
 
 impl DoviCoefficient {
-    fn parse(reader: &mut BsIoSliceReader, header: &RpuDataHeader) -> Result<Self> {
+    fn parse(reader: &mut BsIoSliceReader, header: &RpuDataHeader) -> BoundedResult<Self> {
         Ok(Self {
             integer: if header.coefficient_data_type == 0 {
                 Some(reader.read_se()?)
@@ -19,16 +20,16 @@ impl DoviCoefficient {
         })
     }
 
-    pub(crate) fn validate(&self, header: &RpuDataHeader) -> Result<()> {
-        ensure!(
+    pub(crate) fn validate(&self, header: &RpuDataHeader) -> BoundedResult<()> {
+        bensure!(
             self.integer.is_some() == (header.coefficient_data_type == 0),
             "Invalid coefficient encoding"
         );
-        ensure!(
+        bensure!(
             self.integer != Some(i64::MIN),
             "Coefficient integer is not writable"
         );
-        ensure!(
+        bensure!(
             self.value < (1_u64 << header.coefficient_log2_denom_length),
             "Coefficient value exceeds width"
         );
@@ -45,13 +46,20 @@ impl DoviCoefficient {
 }
 
 impl DoviMappingPiece {
-    pub(crate) fn parse(reader: &mut BsIoSliceReader, header: &RpuDataHeader) -> Result<Self> {
+    pub(crate) fn parse(
+        reader: &mut BsIoSliceReader,
+        header: &RpuDataHeader,
+    ) -> BoundedResult<Self> {
         match reader.read_ue()? {
             0 => {
                 let order_minus1 = reader.read_ue()?;
-                ensure!(order_minus1 <= 1, "Invalid polynomial order");
+                bensure!(order_minus1 <= 1, "Invalid polynomial order");
                 if order_minus1 == 0 {
-                    ensure!(!reader.read_bit()?, "Unsupported polynomial interpolation");
+                    bensure!(
+                        !reader.read_bit()?,
+                        Unsupported,
+                        "Unsupported polynomial interpolation"
+                    );
                 }
                 let mut coefficients = array_vec!();
                 for _ in 0..order_minus1 + 2 {
@@ -61,7 +69,7 @@ impl DoviMappingPiece {
             }
             1 => {
                 let order_minus1 = reader.read::<2, u8>()?;
-                ensure!(order_minus1 <= 2, "Invalid MMR order");
+                bensure!(order_minus1 <= 2, "Invalid MMR order");
                 let constant = DoviCoefficient::parse(reader, header)?;
                 let mut orders = array_vec!();
                 for _ in 0..=order_minus1 {
@@ -73,17 +81,17 @@ impl DoviMappingPiece {
                 }
                 Ok(Self::MMR(DoviMmrPiece { constant, orders }))
             }
-            _ => bail!("Invalid mapping method"),
+            _ => bbail!("Invalid mapping method"),
         }
     }
 
-    pub(crate) fn validate_shape(&self) -> Result<()> {
+    pub(crate) fn validate_shape(&self) -> BoundedResult<()> {
         match self {
-            Self::Polynomial(piece) => ensure!(
+            Self::Polynomial(piece) => bensure!(
                 (2..=3).contains(&piece.coefficients.len()),
                 "Invalid polynomial coefficient count"
             ),
-            Self::MMR(piece) => ensure!(
+            Self::MMR(piece) => bensure!(
                 (1..=3).contains(&piece.orders.len()),
                 "Invalid MMR order count"
             ),
@@ -91,7 +99,7 @@ impl DoviMappingPiece {
         Ok(())
     }
 
-    pub(crate) fn validate(&self, header: &RpuDataHeader) -> Result<()> {
+    pub(crate) fn validate(&self, header: &RpuDataHeader) -> BoundedResult<()> {
         self.validate_shape()?;
         match self {
             Self::Polynomial(piece) => {

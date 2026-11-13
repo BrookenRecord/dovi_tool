@@ -1,4 +1,5 @@
-use anyhow::{Result, ensure};
+use crate::rpu::bounded_error::{BoundedParseError, BoundedResult, bensure};
+use anyhow::Result;
 use bitvec_helpers::{
     bitstream_io_reader::BsIoSliceReader, bitstream_io_writer::BitstreamIoWriter,
 };
@@ -180,15 +181,20 @@ impl ExtMetadataBlock {
         }
     }
 
+    /// Check whether this metadata level is allowed by the selected CM version.
+    /// Returns a legacy Anyhow diagnostic on refusal; exact text and chains may change.
     pub fn validate_correct_dm_data<T: WithExtMetadataBlocks>(&self) -> Result<()> {
-        let level = self.level();
+        self.validate_correct_dm_data_bounded::<T>()
+            .map_err(BoundedParseError::into_anyhow)
+    }
 
-        ensure!(
+    fn validate_correct_dm_data_bounded<T: WithExtMetadataBlocks>(&self) -> BoundedResult<()> {
+        let level = self.level();
+        bensure!(
             T::ALLOWED_BLOCK_LEVELS.contains(&level),
             "Metadata block level {} is not allowed",
             level
         );
-
         Ok(())
     }
 
@@ -196,24 +202,36 @@ impl ExtMetadataBlock {
         &self,
         reader: &mut BsIoSliceReader,
         block_length: u64,
-    ) -> Result<()> {
+    ) -> BoundedResult<()> {
         let level = self.level();
 
-        ensure!(
-            block_length == self.length_bytes(),
-            format!(
-                "Invalid metadata block. Block level {} should have length {}",
-                level,
-                self.length_bytes()
-            )
+        // These levels retain the declared length. Reject unsupported values before
+        // length_bits can overflow or required_bits reaches its closed length table.
+        bensure!(
+            match self {
+                Self::Level8(block) => matches!(block.length, 10 | 12 | 13 | 19 | 25),
+                Self::Level9(block) => matches!(block.length, 1 | 17),
+                Self::Level10(block) => matches!(block.length, 5 | 21),
+                _ => true,
+            },
+            "Invalid metadata block length {} for level {}",
+            block_length,
+            level
         );
 
-        self.validate_correct_dm_data::<T>()?;
+        bensure!(
+            block_length == self.length_bytes(),
+            "Invalid metadata block. Block level {} should have length {}",
+            level,
+            self.length_bytes()
+        );
+
+        self.validate_correct_dm_data_bounded::<T>()?;
 
         let ext_block_use_bits = self.length_bits() - self.required_bits();
 
         for _ in 0..ext_block_use_bits {
-            ensure!(!reader.read_bit()?, "ext_dm_alignment_zero_bit != 0");
+            bensure!(!reader.read_bit()?, "ext_dm_alignment_zero_bit != 0");
         }
 
         Ok(())

@@ -1,6 +1,7 @@
+use crate::rpu::bounded_error::{BoundedResult, bensure};
 use std::fmt::Display;
 
-use anyhow::{Result, ensure};
+use anyhow::Result;
 use bitvec_helpers::{
     bitstream_io_reader::BsIoSliceReader, bitstream_io_writer::BitstreamIoWriter,
 };
@@ -41,14 +42,14 @@ impl RpuDataNlq {
         reader: &mut BsIoSliceReader,
         header: &RpuDataHeader,
         mapping: &RpuDataMapping,
-    ) -> Result<RpuDataNlq> {
-        ensure!(
+    ) -> BoundedResult<RpuDataNlq> {
+        bensure!(
             mapping.nlq_num_pivots_minus2.is_some(),
             "Shouldn't be in NLQ if not profile 7!"
         );
 
         let num_pivots = mapping.nlq_num_pivots_minus2.unwrap() as usize + 1;
-        ensure!(num_pivots == 1, "NLQ should only have 1 significant pivot");
+        bensure!(num_pivots == 1, "NLQ should only have 1 significant pivot");
 
         let mut data = RpuDataNlq::default();
 

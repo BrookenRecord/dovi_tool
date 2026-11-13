@@ -50,3 +50,29 @@ cd examples
 gcc capi_rpu_file.c -ldovi -o capi_example.o
 ./capi_example.o
 ```
+
+### Bounded HEVC parsing
+
+`DoviRpu::parse_unspec62_nalu_bounded(&[u8])` accepts at most 8192 input bytes,
+including framing and emulation-prevention bytes, and checks this limit before
+allocating. It returns an owned RPU and a fixed-storage `BoundedParseError` on
+failure. The error occupies at most 256 bytes, retains a 192-byte UTF-8 message
+prefix and four context tags, and never constructs Anyhow errors or backtraces.
+Categories distinguish invalid input, unsupported syntax, capacity refusal and
+slice-reader I/O errors. I/O errors retain their `ErrorKind`, discarding their
+original source and message.
+
+Legacy parsing and validation APIs retain Anyhow results and their uncapped input
+behavior through the same parsing bodies. Exact error text and error-chain
+identity are unspecified; legacy reader errors remain downcastable to
+`std::io::Error` with the original kind. Mapping ownership, coefficient values,
+serde output and the C ABI are unchanged by this entry point.
+
+The fixed error storage bounds diagnostics, not process memory. EPB removal and
+retained-tail storage still use infallible allocations; system OOM is not a
+recoverable parse error. The retained tail reserves its actual remaining input
+bits once. Mapping pieces and extension blocks have compile-time layout ceilings
+of 1024 and 256 bytes. A consuming application must qualify its toolchain and
+target allocation requests, admit bounded input before copying, and account for
+retained and concurrent objects separately. This library does not implement an
+application metadata pool or establish a process RSS limit.

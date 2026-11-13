@@ -20,6 +20,8 @@ pub struct ReservedExtMetadataBlock {
 }
 
 impl ReservedExtMetadataBlock {
+    // Unknown extension levels are refused before this legacy parser is reached.
+    #[allow(dead_code)]
     pub(crate) fn parse(
         ext_block_length: u64,
         ext_block_level: u8,

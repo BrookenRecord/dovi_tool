@@ -1,4 +1,5 @@
-use anyhow::{Result, ensure};
+use crate::rpu::bounded_error::{BoundedResult, bensure, bounded_error};
+use anyhow::Result;
 use bitvec_helpers::{
     bitstream_io_reader::BsIoSliceReader, bitstream_io_writer::BitstreamIoWriter,
 };
@@ -12,7 +13,10 @@ use crate::rpu::{
 };
 
 impl RpuDataMapping {
-    pub(crate) fn parse(reader: &mut BsIoSliceReader, header: &RpuDataHeader) -> Result<Self> {
+    pub(crate) fn parse(
+        reader: &mut BsIoSliceReader,
+        header: &RpuDataHeader,
+    ) -> BoundedResult<Self> {
         let mut mapping = Self {
             vdr_rpu_id: reader.read_ue()?,
             mapping_color_space: reader.read_ue()?,
@@ -24,7 +28,7 @@ impl RpuDataMapping {
 
         for curve in &mut mapping.curves {
             curve.num_pivots_minus2 = reader.read_ue()?;
-            ensure!(
+            bensure!(
                 curve.num_pivots_minus2 <= 7,
                 "num_pivots_minus2 must be at most 7"
             );
@@ -32,14 +36,18 @@ impl RpuDataMapping {
             curve
                 .pivots
                 .try_reserve_exact(num_pivots)
-                .map_err(|_| anyhow::anyhow!("Unable to reserve mapping pivots"))?;
+                .map_err(|_| bounded_error!(Capacity, "Unable to reserve mapping pivots"))?;
             for _ in 0..num_pivots {
                 curve.pivots.push(reader.read_var(bl_bit_depth)?);
             }
         }
 
         if header.rpu_format & 0x700 == 0 && !header.disable_residual_flag {
-            ensure!(reader.read::<3, u8>()? == 0, "Unsupported NLQ method");
+            bensure!(
+                reader.read::<3, u8>()? == 0,
+                Unsupported,
+                "Unsupported NLQ method"
+            );
             mapping.nlq_method_idc = Some(DoviNlqMethod::LinearDeadzone);
             mapping.nlq_num_pivots_minus2 = Some(0);
             let mut pivots = [0; NLQ_NUM_PIVOTS];
@@ -56,7 +64,7 @@ impl RpuDataMapping {
             curve
                 .pieces
                 .try_reserve_exact(num_pieces)
-                .map_err(|_| anyhow::anyhow!("Unable to reserve mapping pieces"))?;
+                .map_err(|_| bounded_error!(Capacity, "Unable to reserve mapping pieces"))?;
             for _ in 0..num_pieces {
                 curve.pieces.push(DoviMappingPiece::parse(reader, header)?);
             }
@@ -64,7 +72,7 @@ impl RpuDataMapping {
         if mapping.nlq_method_idc.is_some() {
             mapping.nlq = Some(RpuDataNlq::parse(reader, header, &mapping)?);
         }
-        mapping.validate_with_header(header)?;
+        mapping.validate_with_header_bounded(header)?;
         Ok(mapping)
     }
 

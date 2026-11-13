@@ -1,3 +1,4 @@
+use crate::rpu::bounded_error::BoundedResult;
 use anyhow::{Result, ensure};
 use bitvec_helpers::{
     bitstream_io_reader::BsIoSliceReader, bitstream_io_writer::BitstreamIoWriter,
@@ -53,7 +54,10 @@ pub struct ExtMetadataBlockLevel8 {
 }
 
 impl ExtMetadataBlockLevel8 {
-    pub(crate) fn parse(reader: &mut BsIoSliceReader, length: u64) -> Result<ExtMetadataBlock> {
+    pub(crate) fn parse(
+        reader: &mut BsIoSliceReader,
+        length: u64,
+    ) -> BoundedResult<ExtMetadataBlock> {
         let mut block = Self {
             length,
             target_display_index: reader.read::<8, u8>()?,

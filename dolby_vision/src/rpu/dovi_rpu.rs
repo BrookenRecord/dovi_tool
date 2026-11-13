@@ -1,3 +1,4 @@
+use crate::rpu::bounded_error::{BoundedParseError, BoundedResult, bbail, bensure, bounded_error};
 use anyhow::{Result, anyhow, bail, ensure};
 use bitvec::prelude::{BitVec, Msb0};
 use bitvec_helpers::{
@@ -68,8 +69,12 @@ pub struct DoviRpu {
 
 impl DoviRpu {
     pub fn validated_trimmed_data(data: &[u8]) -> Result<&[u8]> {
+        Self::validated_trimmed_data_bounded(data).map_err(BoundedParseError::into_anyhow)
+    }
+
+    pub(crate) fn validated_trimmed_data_bounded(data: &[u8]) -> BoundedResult<&[u8]> {
         if data.len() < 25 {
-            bail!("Invalid RPU length: {}", data.len());
+            bbail!("Invalid RPU length: {}", data.len());
         }
 
         // Including 0x7C01 prepended
@@ -79,13 +84,35 @@ impl DoviRpu {
             [0, 1, 25, 8, 9] | [124, 1, 25, 8, 9] => &data[2..],
             [1, 25, 8, 9, _] => &data[1..],
             [25, 8, 9, _, _] => data,
-            _ => bail!("Invalid RPU data start bytes\n{:?}", &data[..5]),
+            _ => bbail!("Invalid RPU data start bytes"),
         };
 
         Ok(trimmed_data)
     }
 
-    /// HEVC UNSPEC62 NALU, clears start code emulation prevention 3 bytes
+    /// Parse HEVC UNSPEC62 with an 8192-byte input limit checked before allocation.
+    /// Accepts the same framing as `parse_unspec62_nalu` and returns an owned RPU.
+    /// Errors own fixed inline diagnostics (at most 256 bytes), without Anyhow or
+    /// backtrace construction. Unsupported syntax, invalid input, capacity refusal,
+    /// and reader I/O errors have distinct categories. Allocator OOM is not recoverable.
+    pub fn parse_unspec62_nalu_bounded(
+        data: &[u8],
+    ) -> std::result::Result<DoviRpu, BoundedParseError> {
+        if data.len() > 8192 {
+            return Err(bounded_error!(
+                Capacity,
+                "HEVC RPU input exceeds 8192 bytes"
+            ));
+        }
+        let trimmed = Self::validated_trimmed_data_bounded(data)?;
+        let bytes = clear_start_code_emulation_prevention_3_byte(trimmed);
+        Self::parse_bounded(&bytes)
+            .map_err(|e| e.context(crate::rpu::bounded_error::ParseContext::Rpu))
+    }
+
+    /// HEVC UNSPEC62 NALU, clears start code emulation prevention 3 bytes.
+    /// This legacy API has no 8192-byte limit. Errors are adapted to Anyhow after
+    /// parsing; exact diagnostic text and error chains are not stable contracts.
     pub fn parse_unspec62_nalu(data: &[u8]) -> Result<DoviRpu> {
         let trimmed_data = DoviRpu::validated_trimmed_data(data)?;
 
@@ -112,13 +139,17 @@ impl DoviRpu {
 
     #[inline(always)]
     pub(crate) fn parse(data: &[u8]) -> Result<DoviRpu> {
+        Self::parse_bounded(data).map_err(BoundedParseError::into_anyhow)
+    }
+
+    fn parse_bounded(data: &[u8]) -> BoundedResult<DoviRpu> {
         let trailing_zeroes = data.iter().rev().take_while(|b| **b == 0).count();
 
         // Ignore trailing bytes
         let rpu_end = data.len() - trailing_zeroes;
 
         // Minimum: 1 prefix byte + at least 1 byte payload + 4 CRC32 bytes + 1 final byte = 7
-        ensure!(
+        bensure!(
             rpu_end >= 7,
             "RPU data too short: {rpu_end} bytes after trimming trailing zeroes"
         );
@@ -132,13 +163,13 @@ impl DoviRpu {
         let received_crc32 = compute_crc32(&data[1..crc32_start]);
 
         if last_byte != FINAL_BYTE {
-            bail!("Invalid RPU last byte: {}", last_byte);
+            bbail!("Invalid RPU last byte: {}", last_byte);
         }
 
         let mut dovi_rpu = DoviRpu::read_rpu_data(&data[..rpu_end])?;
 
         if received_crc32 != dovi_rpu.rpu_data_crc32 {
-            bail!(
+            bbail!(
                 "RPU CRC32 does not match the data. Received: {}, expected {}",
                 received_crc32,
                 dovi_rpu.rpu_data_crc32
@@ -148,19 +179,20 @@ impl DoviRpu {
         dovi_rpu.trailing_zeroes = trailing_zeroes;
 
         // Validate
-        dovi_rpu.validate()?;
+        dovi_rpu.validate_bounded()?;
 
         Ok(dovi_rpu)
     }
 
     #[inline(always)]
-    fn read_rpu_data(bytes: &[u8]) -> Result<DoviRpu> {
+    fn read_rpu_data(bytes: &[u8]) -> BoundedResult<DoviRpu> {
         let mut reader = BsIoSliceReader::from_slice(bytes);
 
         let rpu_prefix = reader.read::<8, u8>()?;
-        ensure!(rpu_prefix == 25, "rpu_nal_prefix should be 25");
+        bensure!(rpu_prefix == 25, "rpu_nal_prefix should be 25");
 
-        let mut header = RpuDataHeader::parse(&mut reader)?;
+        let mut header = RpuDataHeader::parse(&mut reader)
+            .map_err(|e| e.context(crate::rpu::bounded_error::ParseContext::Header))?;
 
         // FIXME: rpu_nal_prefix deprecation
         #[allow(deprecated)]
@@ -170,10 +202,15 @@ impl DoviRpu {
 
         // Preliminary header validation
         let dovi_profile = header.get_dovi_profile();
-        header.validate(dovi_profile)?;
+        header
+            .validate_bounded(dovi_profile)
+            .map_err(|e| e.context(crate::rpu::bounded_error::ParseContext::Header))?;
 
         let rpu_data_mapping = if !header.use_prev_vdr_rpu_flag {
-            Some(RpuDataMapping::parse(&mut reader, &header)?)
+            Some(
+                RpuDataMapping::parse(&mut reader, &header)
+                    .map_err(|e| e.context(crate::rpu::bounded_error::ParseContext::Mapping))?,
+            )
         } else {
             None
         };
@@ -184,19 +221,29 @@ impl DoviRpu {
             .unwrap_or(None);
 
         let vdr_dm_data = if header.vdr_dm_metadata_present_flag {
-            Some(vdr_dm_data_payload(&mut reader, &header)?)
+            Some(
+                vdr_dm_data_payload(&mut reader, &header)
+                    .map_err(|e| e.context(crate::rpu::bounded_error::ParseContext::Dm))?,
+            )
         } else {
             None
         };
 
         // rpu_alignment_zero_bit
         while !reader.byte_aligned() {
-            ensure!(!reader.read_bit()?, "rpu_alignment_zero_bit != 0");
+            bensure!(!reader.read_bit()?, "rpu_alignment_zero_bit != 0");
         }
 
         // CRC32 is at the end, there can be more data in between
         let remaining = if reader.available()? > CRC32_TERMINATOR_BITS {
-            let mut remaining: BitVec<u8, Msb0> = BitVec::new();
+            // The reader has consumed complete bytes here. Reserve the retained tail once,
+            // using the actual available bits so legacy inputs remain uncapped.
+            let tail_bits = reader
+                .available()?
+                .checked_sub(CRC32_TERMINATOR_BITS)
+                .and_then(|n| usize::try_from(n).ok())
+                .ok_or_else(|| bounded_error!(Capacity, "Retained tail capacity overflow"))?;
+            let mut remaining: BitVec<u8, Msb0> = BitVec::with_capacity(tail_bits);
 
             while reader.available()? != CRC32_TERMINATOR_BITS {
                 remaining.push(reader.read_bit()?);
@@ -209,12 +256,12 @@ impl DoviRpu {
 
         let avail = reader.available()?;
         if avail != CRC32_TERMINATOR_BITS {
-            bail!("expected {CRC32_TERMINATOR_BITS} remaining bits but have {avail} bits");
+            bbail!("expected {CRC32_TERMINATOR_BITS} remaining bits but have {avail} bits");
         }
 
         let rpu_data_crc32 = reader.read::<32, u32>()?;
         let last_byte = reader.read::<8, u8>()?;
-        ensure!(last_byte == FINAL_BYTE, "last byte should be 0x80");
+        bensure!(last_byte == FINAL_BYTE, "last byte should be 0x80");
 
         Ok(DoviRpu {
             dovi_profile: header.get_dovi_profile(),
@@ -260,7 +307,8 @@ impl DoviRpu {
     fn write_rpu_data(&self) -> Result<Vec<u8>> {
         let mut writer = BitstreamIoWriter::with_capacity(RPU_WRITE_ALLOC_CAPACITY);
 
-        self.validate()?;
+        self.validate_bounded()
+            .map_err(BoundedParseError::into_anyhow)?;
 
         // RPU prefix
         writer.write_const::<8, 0x19>()?;
@@ -319,15 +367,15 @@ impl DoviRpu {
         Ok(writer.into_inner())
     }
 
-    fn validate(&self) -> Result<()> {
-        self.header.validate(self.dovi_profile)?;
+    fn validate_bounded(&self) -> BoundedResult<()> {
+        self.header.validate_bounded(self.dovi_profile)?;
 
         if let Some(mapping) = self.rpu_data_mapping.as_ref() {
-            mapping.validate_with_header(&self.header)?;
+            mapping.validate_with_header_bounded(&self.header)?;
         }
 
         if let Some(vdr_dm_data) = &self.vdr_dm_data {
-            vdr_dm_data.validate()?;
+            vdr_dm_data.validate_bounded()?;
         }
 
         Ok(())

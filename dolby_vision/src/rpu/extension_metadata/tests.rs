@@ -11,7 +11,7 @@ fn count_bytes(count: u64, remaining_bytes: usize) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn check_roundtrip<T: WithExtMetadataBlocks + Default>(meta: T) -> Result<()> {
+fn check_roundtrip<T: BoundedExtMetadataBlocks + Default>(meta: T) -> Result<()> {
     let mut writer = BitstreamIoWriter::with_capacity(64);
     meta.write(&mut writer)?;
     writer.byte_align()?;
@@ -53,6 +53,12 @@ struct RefusalProbe;
 impl Default for RefusalProbe {
     fn default() -> Self {
         panic!("impossible count must be refused before metadata construction");
+    }
+}
+
+impl BoundedExtMetadataBlocks for RefusalProbe {
+    fn parse_block_bounded(&mut self, _: &mut BsIoSliceReader) -> BoundedResult<()> {
+        panic!("impossible count must be refused before block parsing");
     }
 }
 
@@ -129,7 +135,7 @@ fn truncated_count_is_refused_before_construction() {
     for bytes in [&[][..], &[0][..]] {
         let error =
             DmData::parse::<RefusalProbe>(&mut BsIoSliceReader::from_slice(bytes)).unwrap_err();
-        assert!(error.downcast_ref::<std::io::Error>().is_some());
+        assert_eq!(error.io_kind(), Some(std::io::ErrorKind::UnexpectedEof));
     }
 }
 
@@ -142,7 +148,7 @@ fn truncated_block_payload_returns_error() -> Result<()> {
     bytes.pop();
 
     let error = DmData::parse::<CmV40DmData>(&mut BsIoSliceReader::from_slice(&bytes)).unwrap_err();
-    assert!(error.downcast_ref::<std::io::Error>().is_some());
+    assert_eq!(error.io_kind(), Some(std::io::ErrorKind::UnexpectedEof));
     Ok(())
 }
 

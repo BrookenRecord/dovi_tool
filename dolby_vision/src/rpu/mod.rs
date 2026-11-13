@@ -1,5 +1,10 @@
+// Bounded parse errors deliberately retain diagnostics inline instead of boxing
+// untrusted failures. bounded_error.rs enforces the 256-byte layout ceiling.
+#![allow(clippy::result_large_err)]
+
 use crc::{CRC_32_MPEG_2, Crc, Table};
 
+pub mod bounded_error;
 pub mod dovi_rpu;
 pub mod extension_metadata;
 pub mod generate;

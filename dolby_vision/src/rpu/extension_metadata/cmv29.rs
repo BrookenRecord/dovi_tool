@@ -1,10 +1,11 @@
-use anyhow::{Result, bail, ensure};
+use crate::rpu::bounded_error::{BoundedParseError, BoundedResult, bbail, bensure};
+use anyhow::Result;
 use bitvec_helpers::bitstream_io_reader::BsIoSliceReader;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use super::WithExtMetadataBlocks;
+use super::{BoundedExtMetadataBlocks, WithExtMetadataBlocks};
 use crate::rpu::extension_metadata::blocks::*;
 
 #[derive(Debug, Default, Clone)]
@@ -42,40 +43,8 @@ impl WithExtMetadataBlocks for CmV29DmData {
     }
 
     fn parse_block(&mut self, reader: &mut BsIoSliceReader) -> Result<()> {
-        let ext_block_length = reader.read_ue()?;
-        let ext_block_level = reader.read::<8, u8>()?;
-
-        let ext_metadata_block = match ext_block_level {
-            1 => level1::ExtMetadataBlockLevel1::parse(reader)?,
-            2 => level2::ExtMetadataBlockLevel2::parse(reader)?,
-            4 => level4::ExtMetadataBlockLevel4::parse(reader)?,
-            5 => level5::ExtMetadataBlockLevel5::parse(reader)?,
-            6 => level6::ExtMetadataBlockLevel6::parse(reader)?,
-            255 => level255::ExtMetadataBlockLevel255::parse(reader)?,
-            3 | 8 | 9 | 10 | 11 | 254 => bail!("Disallowed block level {}", ext_block_level),
-            _ => {
-                // FIXME: This returns early so the parsing doesn't actually take place
-                ensure!(
-                    false,
-                    format!(
-                        "Unknown metadata block found: Level {}, length {}, please open an issue.",
-                        ext_block_level, ext_block_length
-                    )
-                );
-
-                reserved::ReservedExtMetadataBlock::parse(
-                    ext_block_length,
-                    ext_block_level,
-                    reader,
-                )?
-            }
-        };
-
-        ext_metadata_block.validate_and_read_remaining::<Self>(reader, ext_block_length)?;
-
-        self.ext_metadata_blocks.push(ext_metadata_block);
-
-        Ok(())
+        self.parse_block_bounded(reader)
+            .map_err(BoundedParseError::into_anyhow)
     }
 }
 
@@ -102,6 +71,11 @@ impl CmV29DmData {
     /// The specification requires one block of L1, L4, L5, L6 and L255.
     /// However they are not really required, so YMMV.
     pub fn validate(&self) -> Result<()> {
+        self.validate_bounded()
+            .map_err(BoundedParseError::into_anyhow)
+    }
+
+    pub(crate) fn validate_bounded(&self) -> BoundedResult<()> {
         let blocks = self.blocks_ref();
 
         let invalid_blocks_count = blocks
@@ -121,35 +95,63 @@ impl CmV29DmData {
 
         let level6_count = blocks.iter().filter(|b| b.level() == 6).count();
 
-        ensure!(
+        bensure!(
             invalid_blocks_count == 0,
             "Only allowed blocks level 1, 2, 4, 5, 6, and 255"
         );
 
-        ensure!(
+        bensure!(
             level1_count <= 1,
             "There must be at most one L1 metadata block"
         );
-        ensure!(
+        bensure!(
             level2_count <= 8,
             "There must be at most 8 L2 metadata blocks"
         );
-        ensure!(
+        bensure!(
             level255_count <= 1,
             "There must be at most one L255 metadata block"
         );
-        ensure!(
+        bensure!(
             level4_count <= 1,
             "There must be at most one L4 metadata block"
         );
-        ensure!(
+        bensure!(
             level5_count <= 1,
             "There must be at most one L5 metadata block"
         );
-        ensure!(
+        bensure!(
             level6_count <= 1,
             "There must be at most one L6 metadata block"
         );
+
+        Ok(())
+    }
+}
+
+impl super::BoundedExtMetadataBlocks for CmV29DmData {
+    fn parse_block_bounded(&mut self, reader: &mut BsIoSliceReader) -> BoundedResult<()> {
+        let ext_block_length = reader.read_ue()?;
+        let ext_block_level = reader.read::<8, u8>()?;
+
+        let ext_metadata_block = match ext_block_level {
+            1 => level1::ExtMetadataBlockLevel1::parse(reader)?,
+            2 => level2::ExtMetadataBlockLevel2::parse(reader)?,
+            4 => level4::ExtMetadataBlockLevel4::parse(reader)?,
+            5 => level5::ExtMetadataBlockLevel5::parse(reader)?,
+            6 => level6::ExtMetadataBlockLevel6::parse(reader)?,
+            255 => level255::ExtMetadataBlockLevel255::parse(reader)?,
+            3 | 8 | 9 | 10 | 11 | 254 => bbail!("Disallowed block level {}", ext_block_level),
+            _ => bbail!(
+                "Unknown metadata block level {}, length {}",
+                ext_block_level,
+                ext_block_length
+            ),
+        };
+
+        ext_metadata_block.validate_and_read_remaining::<Self>(reader, ext_block_length)?;
+
+        self.ext_metadata_blocks.push(ext_metadata_block);
 
         Ok(())
     }

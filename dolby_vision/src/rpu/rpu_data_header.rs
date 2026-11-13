@@ -1,4 +1,5 @@
-use anyhow::{Result, bail, ensure};
+use crate::rpu::bounded_error::{BoundedParseError, BoundedResult, bbail, bensure};
+use anyhow::Result;
 use bitvec_helpers::{
     bitstream_io_reader::BsIoSliceReader, bitstream_io_writer::BitstreamIoWriter,
 };
@@ -54,9 +55,9 @@ pub struct RpuDataHeader {
 }
 
 impl RpuDataHeader {
-    pub(crate) fn parse(reader: &mut BsIoSliceReader) -> Result<RpuDataHeader> {
+    pub(crate) fn parse(reader: &mut BsIoSliceReader) -> BoundedResult<RpuDataHeader> {
         let rpu_type = reader.read::<6, u8>()?;
-        ensure!(rpu_type == 2);
+        bensure!(rpu_type == 2);
 
         let rpu_format = reader.read::<11, u16>()?;
 
@@ -110,7 +111,7 @@ impl RpuDataHeader {
             } else if header.coefficient_data_type == 1 {
                 32
             } else {
-                bail!(
+                bbail!(
                     "Invalid coefficient_data_type value: {}",
                     header.coefficient_data_type
                 );
@@ -127,26 +128,33 @@ impl RpuDataHeader {
         Ok(header)
     }
 
+    /// Validate field constraints. Errors use a legacy Anyhow adapter; exact text
+    /// and chain identity are unspecified, while reader I/O kinds remain downcastable.
     pub fn validate(&self, profile: u8) -> Result<()> {
+        self.validate_bounded(profile)
+            .map_err(BoundedParseError::into_anyhow)
+    }
+
+    pub(crate) fn validate_bounded(&self, profile: u8) -> BoundedResult<()> {
         match profile {
             5 => {
-                ensure!(
+                bensure!(
                     self.vdr_rpu_profile == 0,
                     "profile 5: vdr_rpu_profile should be 0"
                 );
-                ensure!(
+                bensure!(
                     self.bl_video_full_range_flag,
                     "profile 5: bl_video_full_range_flag should be true"
                 );
             }
             7 => {
-                ensure!(
+                bensure!(
                     self.vdr_rpu_profile == 1,
                     "profile 7: vdr_rpu_profile should be 1"
                 );
             }
             8 => {
-                ensure!(
+                bensure!(
                     self.vdr_rpu_profile == 1,
                     "profile 8: vdr_rpu_profile should be 1"
                 );
@@ -154,20 +162,20 @@ impl RpuDataHeader {
             _ => (),
         };
 
-        ensure!(self.vdr_rpu_level == 0, "vdr_rpu_level should be 0");
-        ensure!(
+        bensure!(self.vdr_rpu_level == 0, "vdr_rpu_level should be 0");
+        bensure!(
             self.bl_bit_depth_minus8 == 2,
             "bl_bit_depth_minus8 should be 2"
         );
-        ensure!(
+        bensure!(
             self.el_bit_depth_minus8 == 2,
             "el_bit_depth_minus8 should be 2"
         );
-        ensure!(
+        bensure!(
             self.vdr_bit_depth_minus8 <= 6,
             "vdr_bit_depth_minus8 should be <= 6"
         );
-        ensure!(
+        bensure!(
             self.coefficient_log2_denom <= 23,
             "coefficient_log2_denom should be <= 23"
         );
